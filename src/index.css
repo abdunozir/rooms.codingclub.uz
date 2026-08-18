@@ -43,7 +43,11 @@ body,
 }
 
 body {
-  position: relative;
+  /* Pinned (not just overflow:hidden) so mobile browsers can't pan/scroll
+     the page to "reveal" a focused input when the keyboard opens - that
+     panning is what was dragging the chat header off-screen. */
+  position: fixed;
+  inset: 0;
   overflow: hidden;
 }
 
@@ -111,7 +115,13 @@ body::after {
 .screen {
   position: relative;
   z-index: 1;
+  /* Layered fallbacks, most-precise last: 100vh for very old browsers,
+     100dvh for browsers that keep it in sync with the keyboard themselves,
+     then --app-height (set from main.tsx via the VisualViewport API) for
+     browsers where dvh doesn't reliably track the keyboard opening. */
   height: 100vh;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
   width: 100vw;
   animation: screenIn 0.5s var(--ease) both;
 }
@@ -893,10 +903,6 @@ input[type='text']:focus {
 /* Mobile layout: sidebar and conversation become two full-screen panes
    instead of side-by-side columns, toggled by ChatScreen's showList state. */
 @media (max-width: 768px) {
-  .screen {
-    height: 100dvh;
-  }
-
   .setup-card {
     padding: 26px 22px;
     border-radius: 20px;
