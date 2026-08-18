@@ -6,6 +6,8 @@ import ChatScreen from './ChatScreen.tsx';
 import WelcomePage from './pages/WelcomePage.tsx';
 import CreateRoomPage from './pages/CreateRoomPage.tsx';
 import JoinRoomPage from './pages/JoinRoomPage.tsx';
+import { requestNotificationPermission, showMessageNotification } from './notify.ts';
+import { clearActiveSession, loadActiveSession, saveActiveSession } from './session.ts';
 
 function describeError(err: (Error & { type?: string }) | Error): string {
   const type = (err as { type?: string }).type;
@@ -24,6 +26,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [recentRooms, setRecentRooms] = useState<RecentRoom[]>([]);
+  const [bootstrapping, setBootstrapping] = useState(true);
 
   const [roomCode, setRoomCode] = useState('');
   const [roster, setRoster] = useState<RosterMember[]>([]);
@@ -47,12 +50,31 @@ export default function App() {
       if (id) setNameInput(id.name);
       setIdentity(id);
       setRecentRooms(await db.getRecentRooms());
+
+      const session = id ? loadActiveSession() : null;
+      if (session) {
+        await handleEnterRoom(session.mode, session.roomCode, id!);
+      }
+      setBootstrapping(false);
     })();
   }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: 'end' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!roomCode) return;
+    // Refreshing or closing the tab always drops the live WebRTC session -
+    // there's no server to restore it from - so warn before that happens.
+    // Browsers show their own fixed wording here; the message text is ignored.
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [roomCode]);
 
   async function loadThreadMessages(code: string, threadId: string) {
     const msgs = await db.getThreadMessages(code, threadId);
@@ -74,7 +96,7 @@ export default function App() {
     return current;
   }
 
-  async function handleEnterRoom(mode: 'create' | 'join', codeRaw: string) {
+  async function handleEnterRoom(mode: 'create' | 'join', codeRaw: string, presetIdentity?: Identity) {
     setError('');
     const code = codeRaw.trim();
     if (!code) {
@@ -82,12 +104,21 @@ export default function App() {
       return;
     }
 
+    // Fire from this click handler (a user gesture) rather than later, since
+    // some browsers only honor the permission prompt tied to direct input.
+    // Skipped on an automatic rejoin-after-refresh - there's no click to hang it on.
+    if (!presetIdentity) void requestNotificationPermission();
+
     let id: Identity;
-    try {
-      id = await ensureIdentity();
-    } catch (e) {
-      setError((e as Error).message);
-      return;
+    if (presetIdentity) {
+      id = presetIdentity;
+    } else {
+      try {
+        id = await ensureIdentity();
+      } catch (e) {
+        setError((e as Error).message);
+        return;
+      }
     }
 
     setBusy(true);
@@ -111,6 +142,15 @@ export default function App() {
           await loadThreadMessages(roomCodeRef.current, threadId);
         } else {
           setUnread((u) => ({ ...u, [threadId]: (u[threadId] || 0) + 1 }));
+        }
+        // Only alert when the message wouldn't already be visible: tab
+        // backgrounded, or a different thread is open.
+        if (document.hidden || threadId !== currentThreadRef.current) {
+          showMessageNotification({
+            title: data.scope === 'global' ? `${data.fromName} · Global Chat` : data.fromName,
+            body: data.text,
+            onClick: () => selectThread(threadId),
+          });
         }
       },
       onStatus: () => setOnlineVersion((v) => v + 1),
@@ -136,9 +176,17 @@ export default function App() {
       setCurrentThread('global');
       currentThreadRef.current = 'global';
       await loadThreadMessages(code, 'global');
+      saveActiveSession({ roomCode: code, mode });
+      navigate('/chat', { replace: true });
     } catch (e) {
       console.error(e);
       setError(describeError(e as Error));
+      // The underlying PeerJS connection may already be registered under our
+      // deviceId even though the create/join failed - tear it down so a
+      // retry doesn't collide with this dangling registration.
+      mesh.leave();
+      // Don't keep retrying a broken session on every future load.
+      clearActiveSession();
     } finally {
       setBusy(false);
     }
@@ -185,7 +233,19 @@ export default function App() {
     setUnread({});
     setMessages([]);
     setError('');
+    clearActiveSession();
     navigate('/');
+  }
+
+  if (bootstrapping) {
+    return (
+      <div className="screen setup-screen">
+        <div className="setup-card bootstrap-card">
+          <span className="spinner bootstrap-spinner" />
+          <p className="tagline">Reconnecting…</p>
+        </div>
+      </div>
+    );
   }
 
   if (roomCode && identity) {

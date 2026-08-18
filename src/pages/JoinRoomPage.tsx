@@ -47,6 +47,7 @@ export default function JoinRoomPage({ nameInput, setNameInput, busy, error, onS
           </label>
 
           <button type="submit" className="btn primary" disabled={busy}>
+            {busy && <span className="spinner" />}
             {busy ? 'Joining…' : 'Join room'}
           </button>
 

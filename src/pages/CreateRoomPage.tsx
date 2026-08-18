@@ -38,6 +38,7 @@ export default function CreateRoomPage({ nameInput, setNameInput, busy, error, o
           </label>
 
           <button type="submit" className="btn primary" disabled={busy}>
+            {busy && <span className="spinner" />}
             {busy ? 'Creating…' : 'Create room'}
           </button>
 
