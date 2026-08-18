@@ -1,0 +1,237 @@
+import Peer, { type DataConnection } from 'peerjs';
+
+// Mesh networking: PeerJS's free public cloud broker is used ONLY to exchange
+// the one-time WebRTC handshake info (SDP/ICE). Once connections open, all
+// chat data flows directly device-to-device (peer-to-peer) - no server involved.
+//
+// Topology: the room creator's Peer ID *is* the room code (namespaced). Every
+// other device connects to that ID to join. Whoever is host keeps the roster
+// and broadcasts it on change; new members use the roster to open direct
+// connections to every other member, forming a full mesh - so after the
+// initial join, no message ever passes through the host or the broker again.
+
+const APP_NS = 'wifichat-v1-';
+
+function normalizeCode(code: string): string {
+  return APP_NS + code.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+}
+
+function uuid(): string {
+  return crypto.randomUUID();
+}
+
+export interface RosterMember {
+  id: string;
+  name: string;
+}
+
+export interface IncomingChat {
+  from: string;
+  fromName: string;
+  scope: 'global' | 'direct';
+  to?: string;
+  text: string;
+  ts: number;
+  msgId: string;
+}
+
+type WireMessage =
+  | { type: 'hello'; name: string }
+  | { type: 'roster'; members: RosterMember[] }
+  | { type: 'chat'; scope: 'global' | 'direct'; from: string; fromName: string; to?: string; text: string; ts: number; msgId: string };
+
+export interface MeshCallbacks {
+  onRoster: (members: RosterMember[]) => void;
+  onMessage: (msg: IncomingChat) => void;
+  onStatus: (peerId: string, status: 'online' | 'offline' | 'disconnected') => void;
+  onError: (err: Error & { type?: string }) => void;
+}
+
+export class Mesh {
+  readonly deviceId: string;
+  private name: string;
+  private cb: MeshCallbacks;
+
+  private peer: Peer | null = null;
+  myId: string | null = null;
+  isHost = false;
+  roomCode: string | null = null;
+  private conns = new Map<string, DataConnection>();
+  private roster = new Map<string, { name: string }>();
+
+  constructor(deviceId: string, name: string, callbacks: MeshCallbacks) {
+    this.deviceId = deviceId;
+    this.name = name;
+    this.cb = callbacks;
+  }
+
+  private emitRoster() {
+    const members = [...this.roster.entries()].map(([id, v]) => ({ id, name: v.name }));
+    this.cb.onRoster(members);
+  }
+
+  private broadcastRoster() {
+    if (!this.isHost) return;
+    const members = [...this.roster.entries()].map(([id, v]) => ({ id, name: v.name }));
+    const msg: WireMessage = { type: 'roster', members };
+    for (const conn of this.conns.values()) {
+      if (conn.open) conn.send(msg);
+    }
+  }
+
+  private setupConnection(conn: DataConnection) {
+    conn.on('open', () => {
+      this.conns.set(conn.peer, conn);
+      const hello: WireMessage = { type: 'hello', name: this.name };
+      conn.send(hello);
+      this.cb.onStatus(conn.peer, 'online');
+    });
+
+    conn.on('data', (data) => this.handleData(conn, data as WireMessage));
+
+    conn.on('close', () => {
+      this.conns.delete(conn.peer);
+      this.roster.delete(conn.peer);
+      this.cb.onStatus(conn.peer, 'offline');
+      this.emitRoster();
+      if (this.isHost) this.broadcastRoster();
+    });
+
+    conn.on('error', (err) => this.cb.onError(err));
+  }
+
+  private handleData(conn: DataConnection, data: WireMessage) {
+    const id = conn.peer;
+    switch (data.type) {
+      case 'hello': {
+        this.roster.set(id, { name: data.name });
+        this.emitRoster();
+        if (this.isHost) this.broadcastRoster();
+        break;
+      }
+      case 'roster': {
+        for (const m of data.members) {
+          if (m.id === this.myId) continue;
+          this.roster.set(m.id, { name: m.name });
+          if (!this.conns.has(m.id)) this.connectTo(m.id);
+        }
+        this.emitRoster();
+        break;
+      }
+      case 'chat': {
+        this.cb.onMessage({
+          from: data.from,
+          fromName: data.fromName,
+          scope: data.scope,
+          to: data.to,
+          text: data.text,
+          ts: data.ts,
+          msgId: data.msgId,
+        });
+        break;
+      }
+    }
+  }
+
+  private connectTo(id: string) {
+    if (!this.peer || id === this.myId || this.conns.has(id)) return;
+    const conn = this.peer.connect(id, { reliable: true });
+    this.setupConnection(conn);
+  }
+
+  private createPeer(id: string): Promise<Peer> {
+    return new Promise((resolve, reject) => {
+      const peer = new Peer(id, { debug: 1 });
+      peer.on('open', () => resolve(peer));
+      peer.on('error', (err) => {
+        this.cb.onError(err);
+        reject(err);
+      });
+      peer.on('connection', (conn) => this.setupConnection(conn));
+      peer.on('disconnected', () => this.cb.onStatus('__self__', 'disconnected'));
+    });
+  }
+
+  async createRoom(code: string): Promise<string> {
+    this.roomCode = code;
+    this.isHost = true;
+    this.myId = normalizeCode(code);
+    this.peer = await this.createPeer(this.myId);
+    this.roster.set(this.myId, { name: this.name });
+    this.emitRoster();
+    return this.myId;
+  }
+
+  async joinRoom(code: string): Promise<string> {
+    this.roomCode = code;
+    this.isHost = false;
+    this.myId = this.deviceId;
+    this.peer = await this.createPeer(this.myId);
+    this.roster.set(this.myId, { name: this.name });
+
+    const hostId = normalizeCode(code);
+    await new Promise<void>((resolve, reject) => {
+      const conn = this.peer!.connect(hostId, { reliable: true });
+      let settled = false;
+      // Register setupConnection's 'open' listener and this resolve listener
+      // in the SAME tick, before the connection actually opens. If
+      // setupConnection were instead called from inside an 'open' callback,
+      // its own 'open' listener would be added after the event already
+      // fired and would never run - leaving the connection unregistered.
+      this.setupConnection(conn);
+      conn.on('open', () => {
+        settled = true;
+        resolve();
+      });
+      conn.on('error', (err) => {
+        if (!settled) reject(err);
+      });
+      setTimeout(() => {
+        if (!settled) reject(new Error('Timed out reaching that room code. Check the code and try again.'));
+      }, 12000);
+    });
+    return this.myId;
+  }
+
+  sendGlobal(text: string): IncomingChat {
+    const msg: WireMessage = { type: 'chat', scope: 'global', from: this.myId!, fromName: this.name, text, ts: Date.now(), msgId: uuid() };
+    for (const conn of this.conns.values()) {
+      if (conn.open) conn.send(msg);
+    }
+    return msg as IncomingChat;
+  }
+
+  sendDirect(toId: string, text: string): IncomingChat {
+    const msg: WireMessage = { type: 'chat', scope: 'direct', from: this.myId!, fromName: this.name, to: toId, text, ts: Date.now(), msgId: uuid() };
+    const conn = this.conns.get(toId);
+    if (conn && conn.open) conn.send(msg);
+    return msg as IncomingChat;
+  }
+
+  isPeerOnline(id: string): boolean {
+    const conn = this.conns.get(id);
+    return !!(conn && conn.open);
+  }
+
+  leave() {
+    for (const conn of this.conns.values()) {
+      try {
+        conn.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.conns.clear();
+    this.roster.clear();
+    if (this.peer) {
+      try {
+        this.peer.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.peer = null;
+    this.myId = null;
+    this.isHost = false;
+  }
+}
