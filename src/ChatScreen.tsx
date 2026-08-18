@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { Identity, StoredMessage } from './db.ts';
 import type { Mesh, RosterMember } from './mesh.ts';
 import { avatarAccentColor, avatarGradient, initials } from './avatar.ts';
@@ -8,6 +7,9 @@ interface Props {
   roomCode: string;
   roster: RosterMember[];
   currentThread: string;
+  // On mobile, sidebar and conversation are two full-screen panes rather than
+  // side-by-side columns; this says which one is the route currently on.
+  showConversation: boolean;
   messages: StoredMessage[];
   unread: Record<string, number>;
   mesh: Mesh | null;
@@ -15,7 +17,8 @@ interface Props {
   messageInput: string;
   setMessageInput: (v: string) => void;
   onSelectThread: (threadId: string) => void;
-  onSend: (e: React.FormEvent) => void;
+  onBackToList: () => void;
+  onSend: (e: React.SyntheticEvent<HTMLFormElement>) => void;
   onLeave: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
 }
@@ -36,6 +39,7 @@ export default function ChatScreen({
   roomCode,
   roster,
   currentThread,
+  showConversation,
   messages,
   unread,
   mesh,
@@ -43,6 +47,7 @@ export default function ChatScreen({
   messageInput,
   setMessageInput,
   onSelectThread,
+  onBackToList,
   onSend,
   onLeave,
   messagesEndRef,
@@ -53,18 +58,9 @@ export default function ChatScreen({
   const peerOnline = !isGlobal && (mesh?.isPeerOnline(currentThread) ?? false);
   const threadStatus = isGlobal ? `${roster.length + 1} member${roster.length === 0 ? '' : 's'}` : peerOnline ? 'online' : 'offline';
 
-  // On mobile, sidebar and conversation are two full-screen panes rather than
-  // side-by-side columns - this tracks which one is showing.
-  const [showList, setShowList] = useState(true);
-
-  function selectThread(threadId: string) {
-    onSelectThread(threadId);
-    setShowList(false);
-  }
-
   return (
     <div className="screen chat-screen">
-      <aside className={'sidebar' + (showList ? '' : ' mobile-hidden')}>
+      <aside className={'sidebar' + (showConversation ? ' mobile-hidden' : '')}>
         <div className="sidebar-header">
           <div>
             <div className="room-label">Room</div>
@@ -76,7 +72,7 @@ export default function ChatScreen({
         </div>
 
         <div className="thread-list">
-          <button className={'thread-item' + (isGlobal ? ' active' : '')} onClick={() => selectThread('global')}>
+          <button className={'thread-item' + (isGlobal ? ' active' : '')} onClick={() => onSelectThread('global')}>
             <span className="avatar avatar-global">🌐</span>
             <span className="thread-name">Global Chat</span>
             {unread['global'] > 0 && <span className="unread-badge">{unread['global']}</span>}
@@ -88,7 +84,7 @@ export default function ChatScreen({
             const online = mesh?.isPeerOnline(m.id) ?? false;
             void onlineVersion; // re-render on status change
             return (
-              <button key={m.id} className={'thread-item' + (currentThread === m.id ? ' active' : '')} onClick={() => selectThread(m.id)}>
+              <button key={m.id} className={'thread-item' + (currentThread === m.id ? ' active' : '')} onClick={() => onSelectThread(m.id)}>
                 <span className="avatar-wrap">
                   <Avatar seed={m.id} label={initials(m.name)} size={32} />
                   <span className={'status-dot ' + (online ? 'online' : 'offline')}></span>
@@ -109,9 +105,9 @@ export default function ChatScreen({
         </div>
       </aside>
 
-      <main className={'chat-main' + (showList ? ' mobile-hidden' : '')}>
+      <main className={'chat-main' + (showConversation ? '' : ' mobile-hidden')}>
         <div className="chat-header">
-          <button type="button" className="mobile-back-btn" aria-label="Back to chats" onClick={() => setShowList(true)}>
+          <button type="button" className="mobile-back-btn" aria-label="Back to chats" onClick={onBackToList}>
             <svg viewBox="0 0 24 24" width="22" height="22">
               <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>

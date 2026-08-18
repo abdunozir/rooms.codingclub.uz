@@ -297,45 +297,21 @@ input[type='text']:focus {
   background: var(--panel-2-hover);
 }
 
-.choice-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  margin-top: 30px;
-}
-
-@media (max-width: 520px) {
-  .choice-actions {
-    grid-template-columns: 1fr;
-  }
-}
-
-.choice-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-decoration: none;
-  padding: 22px 14px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
-}
-
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.switch-link {
+  margin: 18px 0 0;
+  font-size: 13.5px;
   color: var(--text-dim);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 500;
-  margin-bottom: 20px;
-  transition: color 0.2s var(--ease-fast), transform 0.2s var(--ease-fast);
+  text-align: center;
 }
 
-.back-link:hover {
-  color: var(--text);
-  transform: translateX(-2px);
+.switch-link a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.switch-link a:hover {
+  text-decoration: underline;
 }
 
 .btn {

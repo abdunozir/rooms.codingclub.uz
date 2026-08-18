@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { db, type Identity, type RecentRoom, type StoredMessage } from './db.ts';
 import { Mesh, type RosterMember } from './mesh.ts';
-import ChatScreen from './ChatScreen.tsx';
-import WelcomePage from './pages/WelcomePage.tsx';
+import RoomView from './RoomView.tsx';
 import CreateRoomPage from './pages/CreateRoomPage.tsx';
 import JoinRoomPage from './pages/JoinRoomPage.tsx';
 import { requestNotificationPermission, showMessageNotification } from './notify.ts';
 import { clearActiveSession, loadActiveSession, saveActiveSession } from './session.ts';
+import { threadPath } from './routes.ts';
 
 function describeError(err: (Error & { type?: string }) | Error): string {
   const type = (err as { type?: string }).type;
@@ -30,18 +30,18 @@ export default function App() {
 
   const [roomCode, setRoomCode] = useState('');
   const [roster, setRoster] = useState<RosterMember[]>([]);
-  const [currentThread, setCurrentThread] = useState('global');
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [onlineVersion, setOnlineVersion] = useState(0);
   const [messageInput, setMessageInput] = useState('');
 
   const meshRef = useRef<Mesh | null>(null);
-  const currentThreadRef = useRef(currentThread);
+  // Which thread is open lives in the URL (see RoomView), not React state;
+  // this ref just gives the mesh's message callback a synchronous read of it.
+  const currentThreadRef = useRef('global');
   const roomCodeRef = useRef(roomCode);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  currentThreadRef.current = currentThread;
   roomCodeRef.current = roomCode;
 
   useEffect(() => {
@@ -149,7 +149,7 @@ export default function App() {
           showMessageNotification({
             title: data.scope === 'global' ? `${data.fromName} · Global Chat` : data.fromName,
             body: data.text,
-            onClick: () => selectThread(threadId),
+            onClick: () => navigate(threadPath(roomCodeRef.current, threadId)),
           });
         }
       },
@@ -173,11 +173,10 @@ export default function App() {
       setRoomCode(code);
       await db.touchRoom(code);
       setRecentRooms(await db.getRecentRooms());
-      setCurrentThread('global');
       currentThreadRef.current = 'global';
       await loadThreadMessages(code, 'global');
       saveActiveSession({ roomCode: code, mode });
-      navigate('/chat', { replace: true });
+      navigate(`/room/${code}`, { replace: true });
     } catch (e) {
       console.error(e);
       setError(describeError(e as Error));
@@ -192,43 +191,43 @@ export default function App() {
     }
   }
 
-  async function selectThread(threadId: string) {
-    setCurrentThread(threadId);
+  function handleThreadChange(threadId: string) {
     currentThreadRef.current = threadId;
     setUnread((u) => {
+      if (!(threadId in u)) return u;
       const next = { ...u };
       delete next[threadId];
       return next;
     });
-    await loadThreadMessages(roomCodeRef.current, threadId);
+    void loadThreadMessages(roomCodeRef.current, threadId);
   }
 
-  async function handleSend(e: React.FormEvent) {
+  async function handleSend(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     const text = messageInput.trim();
     const mesh = meshRef.current;
     if (!text || !mesh) return;
     setMessageInput('');
 
-    const msg = currentThread === 'global' ? mesh.sendGlobal(text) : mesh.sendDirect(currentThread, text);
+    const thread = currentThreadRef.current;
+    const msg = thread === 'global' ? mesh.sendGlobal(text) : mesh.sendDirect(thread, text);
 
     await db.addMessage({
       roomCode: roomCodeRef.current,
-      threadId: currentThread,
+      threadId: thread,
       senderId: msg.from,
       senderName: identity!.name,
       text: msg.text,
       ts: msg.ts,
       self: true,
     });
-    await loadThreadMessages(roomCodeRef.current, currentThread);
+    await loadThreadMessages(roomCodeRef.current, thread);
   }
 
   function handleLeave() {
     meshRef.current?.leave();
     meshRef.current = null;
     setRoomCode('');
-    setCurrentThread('global');
     setRoster([]);
     setUnread({});
     setMessages([]);
@@ -248,30 +247,39 @@ export default function App() {
     );
   }
 
-  if (roomCode && identity) {
-    return (
-      <ChatScreen
-        identity={identity}
-        roomCode={roomCode}
-        roster={roster}
-        currentThread={currentThread}
-        messages={messages}
-        unread={unread}
-        mesh={meshRef.current}
-        onlineVersion={onlineVersion}
-        messageInput={messageInput}
-        setMessageInput={setMessageInput}
-        onSelectThread={selectThread}
-        onSend={handleSend}
-        onLeave={handleLeave}
-        messagesEndRef={messagesEndRef}
-      />
-    );
-  }
+  const joinPage = (
+    <JoinRoomPage
+      nameInput={nameInput}
+      setNameInput={setNameInput}
+      busy={busy}
+      error={error}
+      recentRooms={recentRooms}
+      onSubmit={(code) => handleEnterRoom('join', code)}
+    />
+  );
+
+  const roomView = (
+    <RoomView
+      identity={identity}
+      connectedRoomCode={roomCode}
+      roster={roster}
+      messages={messages}
+      unread={unread}
+      mesh={meshRef.current}
+      onlineVersion={onlineVersion}
+      messageInput={messageInput}
+      setMessageInput={setMessageInput}
+      onThreadChange={handleThreadChange}
+      onSend={handleSend}
+      onLeave={handleLeave}
+      messagesEndRef={messagesEndRef}
+    />
+  );
 
   return (
     <Routes>
-      <Route path="/" element={<WelcomePage recentRooms={recentRooms} />} />
+      <Route path="/" element={joinPage} />
+      <Route path="/join" element={joinPage} />
       <Route
         path="/create"
         element={
@@ -284,18 +292,8 @@ export default function App() {
           />
         }
       />
-      <Route
-        path="/join"
-        element={
-          <JoinRoomPage
-            nameInput={nameInput}
-            setNameInput={setNameInput}
-            busy={busy}
-            error={error}
-            onSubmit={(code) => handleEnterRoom('join', code)}
-          />
-        }
-      />
+      <Route path="/room/:roomCode" element={roomView} />
+      <Route path="/room/:roomCode/:chatId" element={roomView} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
