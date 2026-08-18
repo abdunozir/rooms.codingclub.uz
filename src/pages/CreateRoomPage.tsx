@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import BrandHeader from '../BrandHeader.tsx';
 
 interface Props {
   nameInput: string;
@@ -20,10 +21,7 @@ export default function CreateRoomPage({ nameInput, setNameInput, busy, error, o
   return (
     <div className="screen setup-screen">
       <div className="setup-card">
-        <Link to="/" className="back-link">
-          ← Back
-        </Link>
-        <h1>Create a room</h1>
+        <BrandHeader />
         <p className="tagline">Pick a room code and share it with the other devices. Anyone with the code can join over WiFi.</p>
 
         <form onSubmit={handleSubmit}>
@@ -44,6 +42,10 @@ export default function CreateRoomPage({ nameInput, setNameInput, busy, error, o
 
           {error && <p className="error">{error}</p>}
         </form>
+
+        <p className="switch-link">
+          Have a room code already? <Link to="/">Join a room instead</Link>
+        </p>
       </div>
     </div>
   );

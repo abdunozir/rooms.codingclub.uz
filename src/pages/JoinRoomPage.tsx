@@ -1,15 +1,18 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import BrandHeader from '../BrandHeader.tsx';
+import type { RecentRoom } from '../db.ts';
 
 interface Props {
   nameInput: string;
   setNameInput: (v: string) => void;
   busy: boolean;
   error: string;
+  recentRooms: RecentRoom[];
   onSubmit: (code: string) => void;
 }
 
-export default function JoinRoomPage({ nameInput, setNameInput, busy, error, onSubmit }: Props) {
+export default function JoinRoomPage({ nameInput, setNameInput, busy, error, recentRooms, onSubmit }: Props) {
   const location = useLocation();
   const prefill = (location.state as { code?: string } | null)?.code ?? '';
   const [code, setCode] = useState(prefill);
@@ -22,11 +25,8 @@ export default function JoinRoomPage({ nameInput, setNameInput, busy, error, onS
   return (
     <div className="screen setup-screen">
       <div className="setup-card">
-        <Link to="/" className="back-link">
-          ← Back
-        </Link>
-        <h1>Join a room</h1>
-        <p className="tagline">Enter the room code someone shared with you. You'll connect directly to the other devices over WiFi.</p>
+        <BrandHeader />
+        <p className="tagline">Serverless chat over WiFi. Enter a room code to connect directly to the other devices.</p>
 
         <form onSubmit={handleSubmit}>
           <label className="field">
@@ -53,6 +53,23 @@ export default function JoinRoomPage({ nameInput, setNameInput, busy, error, onS
 
           {error && <p className="error">{error}</p>}
         </form>
+
+        <p className="switch-link">
+          Starting a new room? <Link to="/create">Create one instead</Link>
+        </p>
+
+        {recentRooms.length > 0 && (
+          <div className="recent-rooms">
+            <h3>Recent rooms</h3>
+            <div className="recent-rooms-list">
+              {recentRooms.slice(0, 8).map((r) => (
+                <button key={r.roomCode} className="recent-room-chip" onClick={() => setCode(r.roomCode)}>
+                  {r.roomCode}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
