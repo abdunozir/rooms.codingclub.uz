@@ -256,6 +256,14 @@ export default function App() {
       error={error}
       recentRooms={recentRooms}
       onSubmit={(code) => handleEnterRoom('join', code)}
+      onImported={async () => {
+        setRecentRooms(await db.getRecentRooms());
+        const id = await db.getIdentity();
+        if (id) {
+          setIdentity(id);
+          setNameInput(id.name);
+        }
+      }}
     />
   );
 

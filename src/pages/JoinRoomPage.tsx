@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import BrandHeader from '../BrandHeader.tsx';
+import DataTransfer from '../DataTransfer.tsx';
 import type { RecentRoom } from '../db.ts';
 
 interface Props {
@@ -10,9 +11,10 @@ interface Props {
   error: string;
   recentRooms: RecentRoom[];
   onSubmit: (code: string) => void;
+  onImported: () => void;
 }
 
-export default function JoinRoomPage({ nameInput, setNameInput, busy, error, recentRooms, onSubmit }: Props) {
+export default function JoinRoomPage({ nameInput, setNameInput, busy, error, recentRooms, onSubmit, onImported }: Props) {
   const location = useLocation();
   const prefill = (location.state as { code?: string } | null)?.code ?? '';
   const [code, setCode] = useState(prefill);
@@ -70,6 +72,8 @@ export default function JoinRoomPage({ nameInput, setNameInput, busy, error, rec
             </div>
           </div>
         )}
+
+        <DataTransfer onImported={onImported} />
       </div>
     </div>
   );
