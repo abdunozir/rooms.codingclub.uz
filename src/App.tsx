@@ -6,6 +6,7 @@ import RoomView from './RoomView.tsx';
 import CreateRoomPage from './pages/CreateRoomPage.tsx';
 import JoinRoomPage from './pages/JoinRoomPage.tsx';
 import { requestNotificationPermission, showMessageNotification } from './notify.ts';
+import { stripRichText } from './richText.tsx';
 import { clearActiveSession, loadActiveSession, saveActiveSession } from './session.ts';
 import { threadPath } from './routes.ts';
 
@@ -148,7 +149,7 @@ export default function App() {
         if (document.hidden || threadId !== currentThreadRef.current) {
           showMessageNotification({
             title: data.scope === 'global' ? `${data.fromName} · Global Chat` : data.fromName,
-            body: data.text,
+            body: stripRichText(data.text),
             onClick: () => navigate(threadPath(roomCodeRef.current, threadId)),
           });
         }

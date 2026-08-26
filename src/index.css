@@ -850,22 +850,133 @@ input[type='text']:focus {
 }
 
 .send-form {
-  height: 64px;
+  min-height: 64px;
   box-sizing: border-box;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
-  padding: 0 20px;
+  padding: 11px 20px;
   border-top: 1px solid var(--border-soft);
   background: var(--panel-solid);
   flex-shrink: 0;
 }
 
-.send-form input {
+.composer {
   flex: 1;
-  border-radius: 999px;
-  padding: 11px 18px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
   background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 5px 6px 6px;
+  transition:
+    border-color 0.2s var(--ease-fast),
+    background 0.2s var(--ease-fast);
+}
+
+.composer:focus-within {
+  border-color: var(--accent);
+  background: var(--panel-2-hover);
+}
+
+/* The formatting row stays tucked away until the composer is focused. */
+.format-bar {
+  display: flex;
+  gap: 2px;
+  padding: 0 2px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    max-height 0.18s var(--ease-fast),
+    opacity 0.18s var(--ease-fast),
+    margin-bottom 0.18s var(--ease-fast);
+  margin-bottom: -5px;
+}
+
+.composer:focus-within .format-bar {
+  max-height: 26px;
+  opacity: 1;
+  margin-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .format-bar {
+    transition: none;
+  }
+}
+
+.fmt-btn {
+  width: 26px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease-fast),
+    color 0.15s var(--ease-fast);
+}
+
+.fmt-btn b,
+.fmt-btn i,
+.fmt-btn u {
+  pointer-events: none;
+}
+
+.fmt-btn:hover {
+  background: var(--panel-2-hover);
+  color: var(--text);
+}
+
+.fmt-btn:active {
+  transform: scale(0.92);
+}
+
+.composer:focus-within .fmt-btn:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.composer-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14.5px;
+  line-height: 1.4;
+  padding: 4px 8px 5px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.composer-input::placeholder {
+  color: var(--text-faint);
+}
+
+.msg-text strong {
+  font-weight: 700;
+}
+
+.msg-text em {
+  font-style: italic;
+}
+
+.msg-text u {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .send-btn {
@@ -913,7 +1024,8 @@ input[type='text']:focus {
   }
 
   /* 16px prevents iOS Safari from auto-zooming the page on input focus */
-  input[type='text'] {
+  input[type='text'],
+  .composer-input {
     font-size: 16px;
   }
 
@@ -950,7 +1062,7 @@ input[type='text']:focus {
   }
 
   .send-form {
-    padding: 0 12px;
+    padding: 10px 12px;
   }
 
   .thread-item {

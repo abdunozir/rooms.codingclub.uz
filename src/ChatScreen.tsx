@@ -1,6 +1,8 @@
+import { useLayoutEffect, useRef } from 'react';
 import type { Identity, StoredMessage } from './db.ts';
 import type { Mesh, RosterMember } from './mesh.ts';
 import { avatarAccentColor, avatarGradient, initials } from './avatar.ts';
+import { FORMAT_MARKERS, renderRichText } from './richText.tsx';
 
 interface Props {
   identity: Identity;
@@ -52,6 +54,65 @@ export default function ChatScreen({
   onLeave,
   messagesEndRef,
 }: Props) {
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // Selection to reapply after a formatting edit re-renders the textarea.
+  const pendingSelection = useRef<[number, number] | null>(null);
+  // Desktop: Enter sends, Shift+Enter adds a line. Touch keyboards have no
+  // Shift, so there Enter just adds a line and the send button sends.
+  const isTouch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    // Auto-grow the composer with its content, up to a few lines.
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 132) + 'px';
+    // Reapply the caret/selection after a formatting button rewrote the value.
+    const sel = pendingSelection.current;
+    if (sel) {
+      pendingSelection.current = null;
+      el.focus();
+      el.setSelectionRange(sel[0], sel[1]);
+    }
+  }, [messageInput]);
+
+  function wrapSelection(marker: string) {
+    const el = inputRef.current;
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const value = messageInput;
+    const chosen = value.slice(start, end);
+    const next = value.slice(0, start) + marker + chosen + marker + value.slice(end);
+    pendingSelection.current = start === end ? [start + marker.length, start + marker.length] : [start + marker.length, end + marker.length];
+    setMessageInput(next);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const key = e.key.toLowerCase();
+      if (key === 'b') {
+        e.preventDefault();
+        wrapSelection(FORMAT_MARKERS.bold);
+        return;
+      }
+      if (key === 'i') {
+        e.preventDefault();
+        wrapSelection(FORMAT_MARKERS.italic);
+        return;
+      }
+      if (key === 'u') {
+        e.preventDefault();
+        wrapSelection(FORMAT_MARKERS.underline);
+        return;
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !isTouch && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
+    }
+  }
+
   const activePeer = roster.find((m) => m.id === currentThread);
   const isGlobal = currentThread === 'global';
   const threadTitle = isGlobal ? 'Global Chat' : (activePeer?.name ?? 'Unknown device');
@@ -137,7 +198,7 @@ export default function ChatScreen({
                   </div>
                 )}
                 <div className="msg-text">
-                  {m.text}
+                  {renderRichText(m.text)}
                   <span className="msg-time">{new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
               </div>
@@ -147,13 +208,29 @@ export default function ChatScreen({
         </div>
 
         <form className="send-form" onSubmit={onSend}>
-          <input
-            type="text"
-            placeholder="Message"
-            autoComplete="off"
-            value={messageInput}
-            onChange={(e) => setMessageInput(e.target.value)}
-          />
+          <div className="composer">
+            <div className="format-bar" aria-label="Text formatting">
+              <button type="button" className="fmt-btn" aria-label="Bold" title="Bold (Ctrl+B)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.bold)}>
+                <b>B</b>
+              </button>
+              <button type="button" className="fmt-btn" aria-label="Italic" title="Italic (Ctrl+I)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.italic)}>
+                <i>I</i>
+              </button>
+              <button type="button" className="fmt-btn" aria-label="Underline" title="Underline (Ctrl+U)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.underline)}>
+                <u>U</u>
+              </button>
+            </div>
+            <textarea
+              ref={inputRef}
+              className="composer-input"
+              placeholder="Message"
+              autoComplete="off"
+              rows={1}
+              value={messageInput}
+              onChange={(e) => setMessageInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+            />
+          </div>
           <button type="submit" className="send-btn" aria-label="Send message">
             <svg viewBox="0 0 24 24" width="19" height="19">
               <path d="M3 11.5L20.5 4 13 21.5l-2.8-7.3L3 11.5z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
