@@ -237,6 +237,21 @@ export default function App() {
     navigate('/');
   }
 
+  // After a backup is imported, pull the freshly-merged data back into view:
+  // the recent-rooms list, the saved name, and - if we're in a room - the
+  // currently open thread (imported history for it should show right away).
+  async function handleDataImported() {
+    setRecentRooms(await db.getRecentRooms());
+    const id = await db.getIdentity();
+    if (id) {
+      setIdentity(id);
+      setNameInput(id.name);
+    }
+    if (roomCodeRef.current) {
+      await loadThreadMessages(roomCodeRef.current, currentThreadRef.current);
+    }
+  }
+
   if (bootstrapping) {
     return (
       <div className="screen setup-screen">
@@ -256,14 +271,7 @@ export default function App() {
       error={error}
       recentRooms={recentRooms}
       onSubmit={(code) => handleEnterRoom('join', code)}
-      onImported={async () => {
-        setRecentRooms(await db.getRecentRooms());
-        const id = await db.getIdentity();
-        if (id) {
-          setIdentity(id);
-          setNameInput(id.name);
-        }
-      }}
+      onImported={handleDataImported}
     />
   );
 
@@ -281,6 +289,7 @@ export default function App() {
       onThreadChange={handleThreadChange}
       onSend={handleSend}
       onLeave={handleLeave}
+      onImported={handleDataImported}
       messagesEndRef={messagesEndRef}
     />
   );

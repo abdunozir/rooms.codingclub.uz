@@ -1,10 +1,13 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { db } from './db.ts';
 
 interface Props {
   // Called after a successful import so the caller can refresh anything it
-  // derives from the database (e.g. the recent-rooms list).
+  // derives from the database (recent-rooms list, the open thread, identity).
   onImported: () => void;
+  // "panel" - full section for the setup screen. "compact" - two icon buttons
+  // for the in-room sidebar, with a self-dismissing status line.
+  variant?: 'panel' | 'compact';
 }
 
 type Status = { kind: 'ok' | 'err'; text: string } | null;
@@ -13,10 +16,17 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
-export default function DataTransfer({ onImported }: Props) {
+export default function DataTransfer({ onImported, variant = 'panel' }: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [status, setStatus] = useState<Status>(null);
   const [busy, setBusy] = useState(false);
+
+  // In the sidebar the status has nowhere permanent to live, so fade it out.
+  useEffect(() => {
+    if (variant !== 'compact' || !status) return;
+    const t = setTimeout(() => setStatus(null), 7000);
+    return () => clearTimeout(t);
+  }, [status, variant]);
 
   async function handleExport() {
     setStatus(null);
@@ -32,7 +42,7 @@ export default function DataTransfer({ onImported }: Props) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setStatus({ kind: 'ok', text: `Exported ${plural(bundle.messages.length, 'message')} from ${plural(bundle.rooms.length, 'room')}.` });
+      setStatus({ kind: 'ok', text: `Saved ${plural(bundle.messages.length, 'message')} from ${plural(bundle.rooms.length, 'room')}.` });
     } catch (e) {
       setStatus({ kind: 'err', text: (e as Error).message || 'Export failed.' });
     } finally {
@@ -54,8 +64,8 @@ export default function DataTransfer({ onImported }: Props) {
       if (result.identitySet) parts.push('your saved name');
       const summary =
         result.messages === 0 && result.rooms === 0 && !result.identitySet
-          ? 'Nothing new to import — this device already has everything in that file.'
-          : `Imported ${parts.join(', ')}. Open a room to see its messages.`;
+          ? 'Nothing new — this device already has everything in that file.'
+          : `Imported ${parts.join(', ')}.`;
       setStatus({ kind: 'ok', text: summary });
       onImported();
     } catch (e) {
@@ -64,6 +74,31 @@ export default function DataTransfer({ onImported }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  const hiddenInput = <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={handleFile} />;
+
+  if (variant === 'compact') {
+    return (
+      <div className="data-transfer-compact">
+        {status && <span className={'data-toast ' + status.kind}>{status.text}</span>}
+        <button type="button" className="icon-btn" onClick={handleExport} disabled={busy} title="Export chats to a file" aria-label="Export chats to a file">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" />
+          </svg>
+        </button>
+        <button type="button" className="icon-btn" onClick={() => fileRef.current?.click()} disabled={busy} title="Import chats from a file" aria-label="Import chats from a file">
+          {busy ? (
+            <span className="spinner" />
+          ) : (
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 21V9m0 0l4 4m-4-4l-4 4M5 3h14" />
+            </svg>
+          )}
+        </button>
+        {hiddenInput}
+      </div>
+    );
   }
 
   return (
@@ -80,7 +115,7 @@ export default function DataTransfer({ onImported }: Props) {
           {busy && <span className="spinner" />}
           Import backup
         </button>
-        <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={handleFile} />
+        {hiddenInput}
       </div>
       {status && <p className={status.kind === 'ok' ? 'data-transfer-ok' : 'error'}>{status.text}</p>}
     </div>

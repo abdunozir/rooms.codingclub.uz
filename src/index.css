@@ -720,8 +720,9 @@ input[type='text']:focus {
 }
 
 .sidebar-footer {
+  position: relative;
   height: 64px;
-  padding: 0 18px;
+  padding: 0 14px 0 18px;
   box-sizing: border-box;
   border-top: 1px solid var(--border-soft);
   display: flex;
@@ -734,7 +735,73 @@ input[type='text']:focus {
 }
 
 .me-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text);
+}
+
+/* Export / import controls in the sidebar footer */
+.data-transfer-compact {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease-fast),
+    color 0.15s var(--ease-fast);
+}
+
+.icon-btn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.icon-btn:active {
+  transform: scale(0.92);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.data-toast {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.6);
+  animation: fieldIn 0.28s var(--ease) both;
+  z-index: 3;
+}
+
+.data-toast.err {
+  border-color: rgba(255, 107, 107, 0.5);
+  color: var(--danger);
 }
 
 .chat-main {

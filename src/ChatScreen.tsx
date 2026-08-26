@@ -3,6 +3,7 @@ import type { Identity, StoredMessage } from './db.ts';
 import type { Mesh, RosterMember } from './mesh.ts';
 import { avatarAccentColor, avatarGradient, initials } from './avatar.ts';
 import { FORMAT_MARKERS, renderRichText } from './richText.tsx';
+import DataTransfer from './DataTransfer.tsx';
 
 interface Props {
   identity: Identity;
@@ -22,6 +23,7 @@ interface Props {
   onBackToList: () => void;
   onSend: (e: React.SyntheticEvent<HTMLFormElement>) => void;
   onLeave: () => void;
+  onImported: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
 }
 
@@ -52,6 +54,7 @@ export default function ChatScreen({
   onBackToList,
   onSend,
   onLeave,
+  onImported,
   messagesEndRef,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -163,6 +166,7 @@ export default function ChatScreen({
             <span className="status-dot online"></span>
           </span>
           <span className="me-name">{identity.name}</span>
+          <DataTransfer variant="compact" onImported={onImported} />
         </div>
       </aside>
 
