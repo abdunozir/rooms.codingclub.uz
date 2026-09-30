@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Identity, StoredMessage } from './db.ts';
-import type { Mesh, RosterMember } from './mesh.ts';
+import type { Mesh, RosterMember, TransferProgress } from './mesh.ts';
 import { avatarAccentColor, avatarGradient, initials } from './avatar.ts';
 import { FORMAT_MARKERS, renderRichText } from './richText.tsx';
 import DataTransfer from './DataTransfer.tsx';
 import MessageAttachment from './MessageAttachment.tsx';
+import { formatBytes } from './attachments.ts';
 
 interface Props {
   identity: Identity;
@@ -23,7 +24,8 @@ interface Props {
   onSelectThread: (threadId: string) => void;
   onBackToList: () => void;
   onSend: (e: React.SyntheticEvent<HTMLFormElement>) => void;
-  onSendFile: (file: Blob, name: string) => Promise<void>;
+  onSendFile: (file: Blob, name: string, caption: string) => Promise<void>;
+  transfers: Record<string, TransferProgress>;
   onLeave: () => void;
   onImported: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
@@ -61,6 +63,7 @@ export default function ChatScreen({
   onBackToList,
   onSend,
   onSendFile,
+  transfers,
   onLeave,
   onImported,
   messagesEndRef,
@@ -73,7 +76,6 @@ export default function ChatScreen({
   const isTouch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [sending, setSending] = useState(false);
   const [attachError, setAttachError] = useState('');
 
   // Voice notes: while recording, the composer is swapped for a timer bar.
@@ -103,29 +105,27 @@ export default function ChatScreen({
     };
   }, []);
 
-  async function sendFiles(files: File[]) {
+  // Whatever is typed in the composer rides along as the first file's caption.
+  function sendFiles(files: File[]) {
     setAttachError('');
-    setSending(true);
-    try {
-      for (const f of files) await onSendFile(f, f.name);
-    } catch (e) {
-      setAttachError((e as Error).message || 'Could not send that file.');
-    } finally {
-      setSending(false);
-    }
+    const caption = messageInput.trim();
+    setMessageInput('');
+    files.forEach((f, i) => {
+      onSendFile(f, f.name, i === 0 ? caption : '').catch((e: Error) => setAttachError(e.message || 'Could not send that file.'));
+    });
   }
 
   function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const files = [...(e.target.files ?? [])];
     e.target.value = ''; // let the same file be picked again later
-    if (files.length) void sendFiles(files);
+    if (files.length) sendFiles(files);
   }
 
   function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const files = [...e.clipboardData.files];
     if (!files.length) return;
     e.preventDefault();
-    void sendFiles(files);
+    sendFiles(files);
   }
 
   async function startRecording() {
@@ -157,7 +157,7 @@ export default function ChatScreen({
       const type = (recorder.mimeType || 'audio/webm').split(';')[0];
       const ext = type === 'audio/mp4' ? 'm4a' : 'webm';
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-      void sendFiles([new File(chunks, `voice-${stamp}.${ext}`, { type })]);
+      sendFiles([new File(chunks, `voice-${stamp}.${ext}`, { type })]);
     };
     recorder.start();
     recorderRef.current = recorder;
@@ -221,6 +221,7 @@ export default function ChatScreen({
     }
   }
 
+  const threadTransfers = Object.values(transfers).filter((t) => t.threadId === currentThread);
   const activePeer = roster.find((m) => m.id === currentThread);
   const isGlobal = currentThread === 'global';
   const threadTitle = isGlobal ? 'Global Chat' : (activePeer?.name ?? 'Unknown device');
@@ -317,6 +318,28 @@ export default function ChatScreen({
           <div ref={messagesEndRef} />
         </div>
 
+        {threadTransfers.length > 0 && (
+          <div className="transfers">
+            {threadTransfers.map((t) => {
+              const pct = t.total ? Math.floor((t.done / t.total) * 100) : 100;
+              return (
+                <div key={t.msgId} className="transfer">
+                  <div className="transfer-label">
+                    <span className="transfer-name">
+                      {t.direction === 'out' ? 'Sending' : `Receiving from ${t.peerName}`}: {t.name}
+                    </span>
+                    <span className="transfer-pct">
+                      {formatBytes(t.done)} / {formatBytes(t.total)} · {pct}%
+                    </span>
+                  </div>
+                  <div className="transfer-bar">
+                    <span style={{ width: pct + '%' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {attachError && (
           <div className="attach-error" role="alert">
             {attachError}
@@ -340,16 +363,11 @@ export default function ChatScreen({
               className="attach-btn"
               aria-label="Attach file, photo, video or audio"
               title="Attach file, photo, video or audio"
-              disabled={sending}
               onClick={() => fileRef.current?.click()}
             >
-              {sending ? (
-                <span className="spinner" />
-              ) : (
-                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 01-7.8-7.8l8.6-8.6a3.7 3.7 0 015.2 5.2l-8.6 8.6a1.8 1.8 0 01-2.6-2.6l7.9-7.9" />
-                </svg>
-              )}
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 01-7.8-7.8l8.6-8.6a3.7 3.7 0 015.2 5.2l-8.6 8.6a1.8 1.8 0 01-2.6-2.6l7.9-7.9" />
+              </svg>
             </button>
             <div className="composer">
               <div className="format-bar" aria-label="Text formatting">
@@ -390,7 +408,7 @@ export default function ChatScreen({
               </svg>
             </button>
           ) : (
-            <button type="button" className="send-btn" aria-label="Record voice message" title="Record voice message" disabled={sending} onClick={() => void startRecording()}>
+            <button type="button" className="send-btn" aria-label="Record voice message" title="Record voice message" onClick={() => void startRecording()}>
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="3" width="6" height="11" rx="3" />
                 <path d="M5 11a7 7 0 0014 0M12 18v3" />

@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import ChatScreen from './ChatScreen.tsx';
 import type { Identity, StoredMessage } from './db.ts';
-import type { Mesh, RosterMember } from './mesh.ts';
+import type { Mesh, RosterMember, TransferProgress } from './mesh.ts';
 import { threadPath } from './routes.ts';
 
 interface Props {
@@ -17,7 +17,8 @@ interface Props {
   setMessageInput: (v: string) => void;
   onThreadChange: (threadId: string) => void;
   onSend: (e: React.SyntheticEvent<HTMLFormElement>) => void;
-  onSendFile: (file: Blob, name: string) => Promise<void>;
+  onSendFile: (file: Blob, name: string, caption: string) => Promise<void>;
+  transfers: Record<string, TransferProgress>;
   onLeave: () => void;
   onImported: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
@@ -57,6 +58,7 @@ export default function RoomView(props: Props) {
       onBackToList={() => navigate(`/room/${roomCode}`)}
       onSend={props.onSend}
       onSendFile={props.onSendFile}
+      transfers={props.transfers}
       onLeave={props.onLeave}
       onImported={props.onImported}
       messagesEndRef={props.messagesEndRef}

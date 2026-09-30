@@ -39,11 +39,16 @@ export interface RecentRoom {
 const EXPORT_VERSION = 1;
 
 // JSON can't hold a Blob, so exported attachments carry their bytes as base64.
+// That only scales so far - a backup is one in-memory JSON string - so larger
+// files are left out and exported with `omitted: true` and no bytes.
+export const MAX_EXPORTED_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 export interface ExportedAttachment {
   name: string;
   mime: string;
   size: number;
-  base64: string;
+  base64?: string;
+  omitted?: true;
 }
 
 export type ExportedMessage = Omit<StoredMessage, 'id' | 'attachment'> & { attachment?: ExportedAttachment };
@@ -200,7 +205,8 @@ export const db = {
           };
           if (m.attachment) {
             const { name, mime, size, blob } = m.attachment;
-            out.attachment = { name, mime, size, base64: await blobToBase64(blob) };
+            out.attachment =
+              size > MAX_EXPORTED_ATTACHMENT_BYTES ? { name, mime, size, omitted: true } : { name, mime, size, base64: await blobToBase64(blob) };
           }
           return out;
         }),

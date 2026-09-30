@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { db } from './db.ts';
+import { db, MAX_EXPORTED_ATTACHMENT_BYTES } from './db.ts';
+import { formatBytes } from './attachments.ts';
 
 interface Props {
   // Called after a successful import so the caller can refresh anything it
@@ -42,7 +43,9 @@ export default function DataTransfer({ onImported, variant = 'panel' }: Props) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setStatus({ kind: 'ok', text: `Saved ${plural(bundle.messages.length, 'message')} from ${plural(bundle.rooms.length, 'room')}.` });
+      const omitted = bundle.messages.filter((m) => m.attachment?.omitted).length;
+      const note = omitted ? ` ${plural(omitted, 'file')} over ${formatBytes(MAX_EXPORTED_ATTACHMENT_BYTES)} left out.` : '';
+      setStatus({ kind: 'ok', text: `Saved ${plural(bundle.messages.length, 'message')} from ${plural(bundle.rooms.length, 'room')}.${note}` });
     } catch (e) {
       setStatus({ kind: 'err', text: (e as Error).message || 'Export failed.' });
     } finally {

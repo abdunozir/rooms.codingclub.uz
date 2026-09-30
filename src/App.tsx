@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { db, type Identity, type RecentRoom, type StoredMessage } from './db.ts';
-import { Mesh, type RosterMember } from './mesh.ts';
+import { Mesh, type RosterMember, type TransferProgress } from './mesh.ts';
 import RoomView from './RoomView.tsx';
 import CreateRoomPage from './pages/CreateRoomPage.tsx';
 import JoinRoomPage from './pages/JoinRoomPage.tsx';
@@ -36,6 +36,8 @@ export default function App() {
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [onlineVersion, setOnlineVersion] = useState(0);
   const [messageInput, setMessageInput] = useState('');
+  // Files currently streaming in or out, keyed by msgId.
+  const [transfers, setTransfers] = useState<Record<string, TransferProgress>>({});
 
   const meshRef = useRef<Mesh | null>(null);
   // Which thread is open lives in the URL (see RoomView), not React state;
@@ -140,7 +142,7 @@ export default function App() {
           text: data.text,
           ts: data.ts,
           self: false,
-          attachment: att ? { name: att.name, mime: att.mime, size: att.size, blob: new Blob([att.data], { type: att.mime }) } : undefined,
+          attachment: att,
         });
         if (threadId === currentThreadRef.current) {
           await loadThreadMessages(roomCodeRef.current, threadId);
@@ -158,6 +160,17 @@ export default function App() {
         }
       },
       onStatus: () => setOnlineVersion((v) => v + 1),
+      onTransfer: (p) => {
+        setTransfers((t) => {
+          if ('finished' in p) {
+            if (!(p.msgId in t)) return t;
+            const next = { ...t };
+            delete next[p.msgId];
+            return next;
+          }
+          return { ...t, [p.msgId]: p };
+        });
+      },
       onError: (err) => {
         console.error('mesh error', err);
         if (!meshRef.current) {
@@ -228,34 +241,31 @@ export default function App() {
     await loadThreadMessages(roomCodeRef.current, thread);
   }
 
-  // Sends a picked file or recorded voice note. Whatever is typed in the
-  // composer goes along as its caption.
-  async function handleSendFile(file: Blob, name: string) {
+  // Sends a picked file or recorded voice note, with an optional caption.
+  // Resolves once the whole file has been streamed out.
+  async function handleSendFile(file: Blob, name: string, caption: string) {
     const mesh = meshRef.current;
     if (!mesh) return;
     if (file.size > MAX_ATTACHMENT_BYTES) {
       throw new Error(`That file is ${formatBytes(file.size)} — the limit is ${formatBytes(MAX_ATTACHMENT_BYTES)}.`);
     }
-    const caption = messageInput.trim();
-    setMessageInput('');
-
     const mime = file.type || 'application/octet-stream';
-    const data = await file.arrayBuffer();
-    const wire = { name, mime, size: file.size, data };
     const thread = currentThreadRef.current;
-    const msg = thread === 'global' ? mesh.sendGlobal(caption, wire) : mesh.sendDirect(thread, caption, wire);
+    const { header, done } = mesh.sendFile(thread, caption, file, { name, mime, size: file.size });
 
+    // Store and show the message right away; the bytes keep streaming below.
     await db.addMessage({
       roomCode: roomCodeRef.current,
       threadId: thread,
-      senderId: msg.from,
+      senderId: header.from,
       senderName: identity!.name,
       text: caption,
-      ts: msg.ts,
+      ts: header.ts,
       self: true,
-      attachment: { name, mime, size: file.size, blob: new Blob([data], { type: mime }) },
+      attachment: { name, mime, size: file.size, blob: file },
     });
     await loadThreadMessages(roomCodeRef.current, thread);
+    await done;
   }
 
   function handleLeave() {
@@ -264,6 +274,7 @@ export default function App() {
     setRoomCode('');
     setRoster([]);
     setUnread({});
+    setTransfers({});
     setMessages([]);
     setError('');
     clearActiveSession();
@@ -322,6 +333,7 @@ export default function App() {
       onThreadChange={handleThreadChange}
       onSend={handleSend}
       onSendFile={handleSendFile}
+      transfers={transfers}
       onLeave={handleLeave}
       onImported={handleDataImported}
       messagesEndRef={messagesEndRef}

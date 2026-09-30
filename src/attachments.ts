@@ -1,6 +1,6 @@
-// Everything travels peer-to-peer over a WebRTC data channel and is held in
-// memory on both ends while it does, so keep single files to a sane size.
-export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+// Files stream peer-to-peer in chunks (see Mesh.sendFile) and are stored as
+// Blobs in IndexedDB, so the practical ceiling is the device's storage quota.
+export const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024 * 1024;
 
 export type AttachmentKind = 'image' | 'video' | 'audio' | 'file';
 
