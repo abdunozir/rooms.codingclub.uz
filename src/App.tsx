@@ -7,6 +7,7 @@ import CreateRoomPage from './pages/CreateRoomPage.tsx';
 import JoinRoomPage from './pages/JoinRoomPage.tsx';
 import { requestNotificationPermission, showMessageNotification } from './notify.ts';
 import { stripRichText } from './richText.tsx';
+import { attachmentLabel, MAX_ATTACHMENT_BYTES, formatBytes } from './attachments.ts';
 import { clearActiveSession, loadActiveSession, saveActiveSession } from './session.ts';
 import { threadPath } from './routes.ts';
 
@@ -130,6 +131,7 @@ export default function App() {
       },
       onMessage: async (data) => {
         const threadId = data.scope === 'global' ? 'global' : data.from;
+        const att = data.attachment;
         await db.addMessage({
           roomCode: roomCodeRef.current,
           threadId,
@@ -138,6 +140,7 @@ export default function App() {
           text: data.text,
           ts: data.ts,
           self: false,
+          attachment: att ? { name: att.name, mime: att.mime, size: att.size, blob: new Blob([att.data], { type: att.mime }) } : undefined,
         });
         if (threadId === currentThreadRef.current) {
           await loadThreadMessages(roomCodeRef.current, threadId);
@@ -149,7 +152,7 @@ export default function App() {
         if (document.hidden || threadId !== currentThreadRef.current) {
           showMessageNotification({
             title: data.scope === 'global' ? `${data.fromName} · Global Chat` : data.fromName,
-            body: stripRichText(data.text),
+            body: att ? [attachmentLabel(att.mime, att.name), stripRichText(data.text)].filter(Boolean).join(' · ') : stripRichText(data.text),
             onClick: () => navigate(threadPath(roomCodeRef.current, threadId)),
           });
         }
@@ -225,6 +228,36 @@ export default function App() {
     await loadThreadMessages(roomCodeRef.current, thread);
   }
 
+  // Sends a picked file or recorded voice note. Whatever is typed in the
+  // composer goes along as its caption.
+  async function handleSendFile(file: Blob, name: string) {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`That file is ${formatBytes(file.size)} — the limit is ${formatBytes(MAX_ATTACHMENT_BYTES)}.`);
+    }
+    const caption = messageInput.trim();
+    setMessageInput('');
+
+    const mime = file.type || 'application/octet-stream';
+    const data = await file.arrayBuffer();
+    const wire = { name, mime, size: file.size, data };
+    const thread = currentThreadRef.current;
+    const msg = thread === 'global' ? mesh.sendGlobal(caption, wire) : mesh.sendDirect(thread, caption, wire);
+
+    await db.addMessage({
+      roomCode: roomCodeRef.current,
+      threadId: thread,
+      senderId: msg.from,
+      senderName: identity!.name,
+      text: caption,
+      ts: msg.ts,
+      self: true,
+      attachment: { name, mime, size: file.size, blob: new Blob([data], { type: mime }) },
+    });
+    await loadThreadMessages(roomCodeRef.current, thread);
+  }
+
   function handleLeave() {
     meshRef.current?.leave();
     meshRef.current = null;
@@ -288,6 +321,7 @@ export default function App() {
       setMessageInput={setMessageInput}
       onThreadChange={handleThreadChange}
       onSend={handleSend}
+      onSendFile={handleSendFile}
       onLeave={handleLeave}
       onImported={handleDataImported}
       messagesEndRef={messagesEndRef}

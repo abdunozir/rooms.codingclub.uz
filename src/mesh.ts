@@ -25,6 +25,15 @@ export interface RosterMember {
   name: string;
 }
 
+// A file riding along with a chat message. Sent as a raw ArrayBuffer - PeerJS's
+// default binary serialization splits large payloads into chunks itself.
+export interface WireAttachment {
+  name: string;
+  mime: string;
+  size: number;
+  data: ArrayBuffer;
+}
+
 export interface IncomingChat {
   from: string;
   fromName: string;
@@ -33,12 +42,13 @@ export interface IncomingChat {
   text: string;
   ts: number;
   msgId: string;
+  attachment?: WireAttachment;
 }
 
 type WireMessage =
   | { type: 'hello'; name: string }
   | { type: 'roster'; members: RosterMember[] }
-  | { type: 'chat'; scope: 'global' | 'direct'; from: string; fromName: string; to?: string; text: string; ts: number; msgId: string };
+  | { type: 'chat'; scope: 'global' | 'direct'; from: string; fromName: string; to?: string; text: string; ts: number; msgId: string; attachment?: WireAttachment };
 
 export interface MeshCallbacks {
   onRoster: (members: RosterMember[]) => void;
@@ -127,6 +137,7 @@ export class Mesh {
           text: data.text,
           ts: data.ts,
           msgId: data.msgId,
+          attachment: data.attachment,
         });
         break;
       }
@@ -193,16 +204,16 @@ export class Mesh {
     return this.myId;
   }
 
-  sendGlobal(text: string): IncomingChat {
-    const msg: WireMessage = { type: 'chat', scope: 'global', from: this.myId!, fromName: this.name, text, ts: Date.now(), msgId: uuid() };
+  sendGlobal(text: string, attachment?: WireAttachment): IncomingChat {
+    const msg: WireMessage = { type: 'chat', scope: 'global', from: this.myId!, fromName: this.name, text, ts: Date.now(), msgId: uuid(), attachment };
     for (const conn of this.conns.values()) {
       if (conn.open) conn.send(msg);
     }
     return msg as IncomingChat;
   }
 
-  sendDirect(toId: string, text: string): IncomingChat {
-    const msg: WireMessage = { type: 'chat', scope: 'direct', from: this.myId!, fromName: this.name, to: toId, text, ts: Date.now(), msgId: uuid() };
+  sendDirect(toId: string, text: string, attachment?: WireAttachment): IncomingChat {
+    const msg: WireMessage = { type: 'chat', scope: 'direct', from: this.myId!, fromName: this.name, to: toId, text, ts: Date.now(), msgId: uuid(), attachment };
     const conn = this.conns.get(toId);
     if (conn && conn.open) conn.send(msg);
     return msg as IncomingChat;

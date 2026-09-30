@@ -17,6 +17,7 @@ interface Props {
   setMessageInput: (v: string) => void;
   onThreadChange: (threadId: string) => void;
   onSend: (e: React.SyntheticEvent<HTMLFormElement>) => void;
+  onSendFile: (file: Blob, name: string) => Promise<void>;
   onLeave: () => void;
   onImported: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
@@ -55,6 +56,7 @@ export default function RoomView(props: Props) {
       onSelectThread={(threadId) => navigate(threadPath(roomCode, threadId))}
       onBackToList={() => navigate(`/room/${roomCode}`)}
       onSend={props.onSend}
+      onSendFile={props.onSendFile}
       onLeave={props.onLeave}
       onImported={props.onImported}
       messagesEndRef={props.messagesEndRef}

@@ -9,6 +9,15 @@ export interface Identity {
   name: string;
 }
 
+// Files are kept as Blobs - IndexedDB stores them natively, so a chat full of
+// photos doesn't have to be base64-inflated just to persist.
+export interface Attachment {
+  name: string;
+  mime: string;
+  size: number;
+  blob: Blob;
+}
+
 export interface StoredMessage {
   id?: number;
   roomCode: string;
@@ -18,6 +27,7 @@ export interface StoredMessage {
   text: string;
   ts: number;
   self: boolean;
+  attachment?: Attachment;
 }
 
 export interface RecentRoom {
@@ -28,13 +38,47 @@ export interface RecentRoom {
 // Shape of the backup file produced by exportAll() / accepted by importAll().
 const EXPORT_VERSION = 1;
 
+// JSON can't hold a Blob, so exported attachments carry their bytes as base64.
+export interface ExportedAttachment {
+  name: string;
+  mime: string;
+  size: number;
+  base64: string;
+}
+
+export type ExportedMessage = Omit<StoredMessage, 'id' | 'attachment'> & { attachment?: ExportedAttachment };
+
 export interface ExportBundle {
   app: 'wifichat';
   version: number;
   exportedAt: number;
   identity: Identity | null;
   rooms: RecentRoom[];
-  messages: Omit<StoredMessage, 'id'>[];
+  messages: ExportedMessage[];
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+function base64ToBlob(base64: string, mime: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+function parseExportedAttachment(raw: unknown): Attachment | undefined {
+  const a = raw as Partial<ExportedAttachment> | null | undefined;
+  if (!a || typeof a.name !== 'string' || typeof a.mime !== 'string' || typeof a.base64 !== 'string') return undefined;
+  const blob = base64ToBlob(a.base64, a.mime);
+  return { name: a.name, mime: a.mime, size: blob.size, blob };
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -85,10 +129,12 @@ function txDone(t: IDBTransaction): Promise<void> {
 // Identifies a stored message by content, so importing the same backup twice -
 // or importing a backup that overlaps chats you already have - doesn't create
 // duplicates. There's no stable per-message id shared across devices.
-type MessageKey = Pick<StoredMessage, 'roomCode' | 'threadId' | 'senderId' | 'ts' | 'text'>;
+type MessageKey = Pick<StoredMessage, 'roomCode' | 'threadId' | 'senderId' | 'ts' | 'text'> & {
+  attachment?: { name: string; size: number };
+};
 
 function messageSignature(m: MessageKey): string {
-  return [m.roomCode, m.threadId, m.senderId, m.ts, m.text].join('\u0000');
+  return [m.roomCode, m.threadId, m.senderId, m.ts, m.text, m.attachment?.name ?? '', m.attachment?.size ?? ''].join('\u0000');
 }
 
 export const db = {
@@ -141,15 +187,24 @@ export const db = {
       exportedAt: Date.now(),
       identity: identity ? { deviceId: identity.deviceId, name: identity.name } : null,
       rooms,
-      messages: messages.map((m) => ({
-        roomCode: m.roomCode,
-        threadId: m.threadId,
-        senderId: m.senderId,
-        senderName: m.senderName,
-        text: m.text,
-        ts: m.ts,
-        self: m.self,
-      })),
+      messages: await Promise.all(
+        messages.map(async (m) => {
+          const out: ExportedMessage = {
+            roomCode: m.roomCode,
+            threadId: m.threadId,
+            senderId: m.senderId,
+            senderName: m.senderName,
+            text: m.text,
+            ts: m.ts,
+            self: m.self,
+          };
+          if (m.attachment) {
+            const { name, mime, size, blob } = m.attachment;
+            out.attachment = { name, mime, size, base64: await blobToBase64(blob) };
+          }
+          return out;
+        }),
+      ),
     };
   },
 
@@ -203,7 +258,7 @@ export const db = {
       ) {
         continue;
       }
-      const record = {
+      const record: Omit<StoredMessage, 'id'> = {
         roomCode: m.roomCode,
         threadId: m.threadId,
         senderId: m.senderId,
@@ -212,6 +267,8 @@ export const db = {
         ts: m.ts,
         self: m.self === true,
       };
+      const attachment = parseExportedAttachment(m.attachment);
+      if (attachment) record.attachment = attachment;
       const sig = messageSignature(record);
       if (seen.has(sig)) continue;
       seen.add(sig);

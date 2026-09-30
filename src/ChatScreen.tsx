@@ -1,9 +1,10 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Identity, StoredMessage } from './db.ts';
 import type { Mesh, RosterMember } from './mesh.ts';
 import { avatarAccentColor, avatarGradient, initials } from './avatar.ts';
 import { FORMAT_MARKERS, renderRichText } from './richText.tsx';
 import DataTransfer from './DataTransfer.tsx';
+import MessageAttachment from './MessageAttachment.tsx';
 
 interface Props {
   identity: Identity;
@@ -22,6 +23,7 @@ interface Props {
   onSelectThread: (threadId: string) => void;
   onBackToList: () => void;
   onSend: (e: React.SyntheticEvent<HTMLFormElement>) => void;
+  onSendFile: (file: Blob, name: string) => Promise<void>;
   onLeave: () => void;
   onImported: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
@@ -36,6 +38,11 @@ function Avatar({ seed, label, size = 36 }: { seed: string; label: string; size?
       {label}
     </span>
   );
+}
+
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
 export default function ChatScreen({
@@ -53,6 +60,7 @@ export default function ChatScreen({
   onSelectThread,
   onBackToList,
   onSend,
+  onSendFile,
   onLeave,
   onImported,
   messagesEndRef,
@@ -63,6 +71,103 @@ export default function ChatScreen({
   // Desktop: Enter sends, Shift+Enter adds a line. Touch keyboards have no
   // Shift, so there Enter just adds a line and the send button sends.
   const isTouch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [sending, setSending] = useState(false);
+  const [attachError, setAttachError] = useState('');
+
+  // Voice notes: while recording, the composer is swapped for a timer bar.
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const discardRecording = useRef(false);
+  const [recordingSince, setRecordingSince] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
+
+  useEffect(() => {
+    if (!attachError) return;
+    const t = setTimeout(() => setAttachError(''), 6000);
+    return () => clearTimeout(t);
+  }, [attachError]);
+
+  useEffect(() => {
+    if (recordingSince === null) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [recordingSince]);
+
+  // Leaving the room (or the chat unmounting) mid-recording must release the mic.
+  useEffect(() => {
+    return () => {
+      discardRecording.current = true;
+      recorderRef.current?.stop();
+    };
+  }, []);
+
+  async function sendFiles(files: File[]) {
+    setAttachError('');
+    setSending(true);
+    try {
+      for (const f of files) await onSendFile(f, f.name);
+    } catch (e) {
+      setAttachError((e as Error).message || 'Could not send that file.');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = [...(e.target.files ?? [])];
+    e.target.value = ''; // let the same file be picked again later
+    if (files.length) void sendFiles(files);
+  }
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = [...e.clipboardData.files];
+    if (!files.length) return;
+    e.preventDefault();
+    void sendFiles(files);
+  }
+
+  async function startRecording() {
+    setAttachError('');
+    if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setAttachError('Voice recording is not supported in this browser.');
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setAttachError('Microphone access was denied.');
+      return;
+    }
+    // Chrome/Firefox record webm/opus, Safari only mp4/aac.
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((t) => MediaRecorder.isTypeSupported(t));
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks: Blob[] = [];
+    discardRecording.current = false;
+    recorder.ondataavailable = (ev) => {
+      if (ev.data.size > 0) chunks.push(ev.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      recorderRef.current = null;
+      setRecordingSince(null);
+      if (discardRecording.current || chunks.length === 0) return;
+      const type = (recorder.mimeType || 'audio/webm').split(';')[0];
+      const ext = type === 'audio/mp4' ? 'm4a' : 'webm';
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      void sendFiles([new File(chunks, `voice-${stamp}.${ext}`, { type })]);
+    };
+    recorder.start();
+    recorderRef.current = recorder;
+    setRecordingSince(Date.now());
+  }
+
+  function stopRecording(discard: boolean) {
+    discardRecording.current = discard;
+    recorderRef.current?.stop();
+  }
 
   useLayoutEffect(() => {
     const el = inputRef.current;
@@ -195,13 +300,14 @@ export default function ChatScreen({
           {messages.map((m) => {
             const showName = isGlobal && !m.self;
             return (
-              <div key={m.id} className={'msg' + (m.self ? ' self' : '')}>
+              <div key={m.id} className={'msg' + (m.self ? ' self' : '') + (m.attachment ? ' has-attachment' : '')}>
                 {showName && (
                   <div className="msg-sender" style={{ color: avatarAccentColor(m.senderId) }}>
                     {m.senderName}
                   </div>
                 )}
-                <div className="msg-text">
+                {m.attachment && <MessageAttachment attachment={m.attachment} />}
+                <div className={'msg-text' + (m.attachment && !m.text ? ' msg-text-empty' : '')}>
                   {renderRichText(m.text)}
                   <span className="msg-time">{new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
@@ -211,35 +317,86 @@ export default function ChatScreen({
           <div ref={messagesEndRef} />
         </div>
 
+        {attachError && (
+          <div className="attach-error" role="alert">
+            {attachError}
+          </div>
+        )}
         <form className="send-form" onSubmit={onSend}>
-          <div className="composer">
-            <div className="format-bar" aria-label="Text formatting">
-              <button type="button" className="fmt-btn" aria-label="Bold" title="Bold (Ctrl+B)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.bold)}>
-                <b>B</b>
-              </button>
-              <button type="button" className="fmt-btn" aria-label="Italic" title="Italic (Ctrl+I)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.italic)}>
-                <i>I</i>
-              </button>
-              <button type="button" className="fmt-btn" aria-label="Underline" title="Underline (Ctrl+U)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.underline)}>
-                <u>U</u>
+          <input ref={fileRef} type="file" multiple hidden onChange={handleFilePicked} />
+          {recordingSince !== null ? (
+            <div className="recording-bar">
+              <span className="rec-dot" aria-hidden="true" />
+              <span className="rec-time">{formatDuration(now - recordingSince)}</span>
+              <span className="rec-hint">Recording voice message…</span>
+              <button type="button" className="btn small" onClick={() => stopRecording(true)}>
+                Cancel
               </button>
             </div>
-            <textarea
-              ref={inputRef}
-              className="composer-input"
-              placeholder="Message"
-              autoComplete="off"
-              rows={1}
-              value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-            />
-          </div>
-          <button type="submit" className="send-btn" aria-label="Send message">
-            <svg viewBox="0 0 24 24" width="19" height="19">
-              <path d="M3 11.5L20.5 4 13 21.5l-2.8-7.3L3 11.5z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
-            </svg>
-          </button>
+          ) : (
+            <>
+            <button
+              type="button"
+              className="attach-btn"
+              aria-label="Attach file, photo, video or audio"
+              title="Attach file, photo, video or audio"
+              disabled={sending}
+              onClick={() => fileRef.current?.click()}
+            >
+              {sending ? (
+                <span className="spinner" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 01-7.8-7.8l8.6-8.6a3.7 3.7 0 015.2 5.2l-8.6 8.6a1.8 1.8 0 01-2.6-2.6l7.9-7.9" />
+                </svg>
+              )}
+            </button>
+            <div className="composer">
+              <div className="format-bar" aria-label="Text formatting">
+                <button type="button" className="fmt-btn" aria-label="Bold" title="Bold (Ctrl+B)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.bold)}>
+                  <b>B</b>
+                </button>
+                <button type="button" className="fmt-btn" aria-label="Italic" title="Italic (Ctrl+I)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.italic)}>
+                  <i>I</i>
+                </button>
+                <button type="button" className="fmt-btn" aria-label="Underline" title="Underline (Ctrl+U)" onMouseDown={(e) => e.preventDefault()} onClick={() => wrapSelection(FORMAT_MARKERS.underline)}>
+                  <u>U</u>
+                </button>
+              </div>
+              <textarea
+                ref={inputRef}
+                className="composer-input"
+                placeholder="Message"
+                autoComplete="off"
+                rows={1}
+                value={messageInput}
+                onChange={(e) => setMessageInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+              />
+            </div>
+            </>
+          )}
+          {recordingSince !== null ? (
+            <button type="button" className="send-btn" aria-label="Send voice message" onClick={() => stopRecording(false)}>
+              <svg viewBox="0 0 24 24" width="19" height="19">
+                <path d="M3 11.5L20.5 4 13 21.5l-2.8-7.3L3 11.5z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+              </svg>
+            </button>
+          ) : messageInput.trim() ? (
+            <button type="submit" className="send-btn" aria-label="Send message">
+              <svg viewBox="0 0 24 24" width="19" height="19">
+                <path d="M3 11.5L20.5 4 13 21.5l-2.8-7.3L3 11.5z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+              </svg>
+            </button>
+          ) : (
+            <button type="button" className="send-btn" aria-label="Record voice message" title="Record voice message" disabled={sending} onClick={() => void startRecording()}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="3" width="6" height="11" rx="3" />
+                <path d="M5 11a7 7 0 0014 0M12 18v3" />
+              </svg>
+            </button>
+          )}
         </form>
       </main>
     </div>
