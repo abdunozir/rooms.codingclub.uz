@@ -329,7 +329,7 @@ export default function ChatScreen({
                       {t.direction === 'out' ? 'Sending' : `Receiving from ${t.peerName}`}: {t.name}
                     </span>
                     <span className="transfer-pct">
-                      {formatBytes(t.done)} / {formatBytes(t.total)} · {pct}%
+                      {formatBytes(t.done)} / {formatBytes(t.total)} · {pct}%{t.rate > 0 && t.done < t.total ? ` · ${formatBytes(t.rate)}/s` : ''}
                     </span>
                   </div>
                   <div className="transfer-bar">

@@ -1,4 +1,5 @@
 import Peer, { type DataConnection } from 'peerjs';
+import { openFileChannel, progressMeter, receiveFilesOn, sendFileOver, type FileMeta } from './fileChannel.ts';
 
 // Mesh networking: PeerJS's free public cloud broker is used ONLY to exchange
 // the one-time WebRTC handshake info (SDP/ICE). Once connections open, all
@@ -25,15 +26,6 @@ export interface RosterMember {
   name: string;
 }
 
-// Files travel as a stream of chunks rather than one message: a multi-GB
-// ArrayBuffer can't even be allocated, and PeerJS would otherwise queue the
-// whole thing in memory. The receiver collects chunks as Blob parts, which the
-// browser is free to page out to disk.
-export const FILE_CHUNK_BYTES = 64 * 1024;
-// Pause sending while this much is queued on a channel, so a big file never
-// sits in memory waiting for the network.
-const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
-
 export interface IncomingAttachment {
   name: string;
   mime: string;
@@ -52,12 +44,6 @@ export interface IncomingChat {
   attachment?: IncomingAttachment;
 }
 
-export interface FileMeta {
-  name: string;
-  mime: string;
-  size: number;
-}
-
 export interface TransferProgress {
   msgId: string;
   direction: 'in' | 'out';
@@ -66,27 +52,18 @@ export interface TransferProgress {
   name: string;
   done: number;
   total: number;
+  // Smoothed transfer speed in bytes/second.
+  rate: number;
 }
+
+export type { FileMeta };
 
 type ChatHeader = { scope: 'global' | 'direct'; from: string; fromName: string; to?: string; text: string; ts: number; msgId: string };
-
-interface IncomingFile {
-  header: ChatHeader;
-  meta: FileMeta;
-  parts: Blob[];
-  pending: ArrayBuffer[];
-  pendingBytes: number;
-  received: number;
-}
 
 type WireMessage =
   | { type: 'hello'; name: string }
   | { type: 'roster'; members: RosterMember[] }
-  | ({ type: 'chat' } & ChatHeader)
-  | ({ type: 'file-start'; file: FileMeta } & ChatHeader)
-  | { type: 'file-chunk'; msgId: string; data: ArrayBuffer }
-  | { type: 'file-end'; msgId: string }
-  | { type: 'file-abort'; msgId: string };
+  | ({ type: 'chat' } & ChatHeader);
 
 export interface MeshCallbacks {
   onRoster: (members: RosterMember[]) => void;
@@ -94,10 +71,6 @@ export interface MeshCallbacks {
   onStatus: (peerId: string, status: 'online' | 'offline' | 'disconnected') => void;
   onError: (err: Error & { type?: string }) => void;
   onTransfer: (progress: TransferProgress | { msgId: string; finished: true }) => void;
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 export class Mesh {
@@ -111,8 +84,11 @@ export class Mesh {
   roomCode: string | null = null;
   private conns = new Map<string, DataConnection>();
   private roster = new Map<string, { name: string }>();
-  // In-flight incoming files, keyed by sender then msgId.
-  private incoming = new Map<string, Map<string, IncomingFile>>();
+  // Per-peer raw channel for file bytes (see fileChannel.ts), plus a hook
+  // that abandons that peer's half-received files when it disconnects.
+  // Keyed by connection, not peer id: if two connections to one peer ever
+  // coexist, each keeps its own channel on its own RTCPeerConnection.
+  private fileChannels = new Map<DataConnection, { channel: RTCDataChannel; pc: RTCPeerConnection; abandon: () => void }>();
 
   constructor(deviceId: string, name: string, callbacks: MeshCallbacks) {
     this.deviceId = deviceId;
@@ -137,6 +113,7 @@ export class Mesh {
   private setupConnection(conn: DataConnection) {
     conn.on('open', () => {
       this.conns.set(conn.peer, conn);
+      this.setupFileChannel(conn);
       const hello: WireMessage = { type: 'hello', name: this.name };
       conn.send(hello);
       this.cb.onStatus(conn.peer, 'online');
@@ -145,9 +122,7 @@ export class Mesh {
     conn.on('data', (data) => this.handleData(conn, data as WireMessage));
 
     conn.on('close', () => {
-      // Anything half-received from this peer can never complete.
-      for (const msgId of this.incoming.get(conn.peer)?.keys() ?? []) this.cb.onTransfer({ msgId, finished: true });
-      this.incoming.delete(conn.peer);
+      this.closeFileChannel(conn);
       this.conns.delete(conn.peer);
       this.roster.delete(conn.peer);
       this.cb.onStatus(conn.peer, 'offline');
@@ -181,63 +156,39 @@ export class Mesh {
         this.cb.onMessage(header);
         break;
       }
-      case 'file-start': {
-        const { type: _type, file, ...header } = data;
-        let perPeer = this.incoming.get(id);
-        if (!perPeer) this.incoming.set(id, (perPeer = new Map()));
-        perPeer.set(header.msgId, { header, meta: file, parts: [], pending: [], pendingBytes: 0, received: 0 });
-        this.reportIncoming(header, file, 0);
-        break;
-      }
-      case 'file-chunk': {
-        const f = this.incoming.get(id)?.get(data.msgId);
-        if (!f) break;
-        f.pending.push(data.data);
-        f.pendingBytes += data.data.byteLength;
-        f.received += data.data.byteLength;
-        // Fold chunks into a Blob every few MB so we hold few parts and little
-        // raw ArrayBuffer memory at once.
-        if (f.pendingBytes >= MAX_QUEUED_BYTES) this.flushPending(f);
-        // Throttle progress to roughly once per 1% to keep React renders sane.
-        const step = Math.max(FILE_CHUNK_BYTES, Math.floor(f.meta.size / 100));
-        if (f.received % step < data.data.byteLength) this.reportIncoming(f.header, f.meta, f.received);
-        break;
-      }
-      case 'file-end': {
-        const perPeer = this.incoming.get(id);
-        const f = perPeer?.get(data.msgId);
-        if (!f) break;
-        perPeer!.delete(data.msgId);
-        this.flushPending(f);
-        const blob = new Blob(f.parts, { type: f.meta.mime });
-        this.cb.onTransfer({ msgId: data.msgId, finished: true });
-        this.cb.onMessage({ ...f.header, attachment: { ...f.meta, size: blob.size, blob } });
-        break;
-      }
-      case 'file-abort': {
-        if (this.incoming.get(id)?.delete(data.msgId)) this.cb.onTransfer({ msgId: data.msgId, finished: true });
-        break;
-      }
     }
   }
 
-  private flushPending(f: IncomingFile) {
-    if (!f.pending.length) return;
-    f.parts.push(new Blob(f.pending));
-    f.pending = [];
-    f.pendingBytes = 0;
+  private setupFileChannel(conn: DataConnection) {
+    if (this.fileChannels.has(conn)) return;
+    const pc = conn.peerConnection;
+    const channel = openFileChannel(pc);
+    const abandon = receiveFilesOn<ChatHeader>(channel, {
+      onStart: (header, meta) => {
+        const threadId = header.scope === 'global' ? 'global' : header.from;
+        return progressMeter(meta.size, (done, rate) =>
+          this.cb.onTransfer({ msgId: header.msgId, direction: 'in', threadId, peerName: header.fromName, name: meta.name, done, total: meta.size, rate }),
+        );
+      },
+      onComplete: (header, meta, blob) => {
+        this.cb.onTransfer({ msgId: header.msgId, finished: true });
+        this.cb.onMessage({ ...header, attachment: { ...meta, size: blob.size, blob } });
+      },
+      onAbort: (header) => this.cb.onTransfer({ msgId: header.msgId, finished: true }),
+    });
+    this.fileChannels.set(conn, { channel, pc, abandon });
   }
 
-  private reportIncoming(header: ChatHeader, meta: FileMeta, done: number) {
-    this.cb.onTransfer({
-      msgId: header.msgId,
-      direction: 'in',
-      threadId: header.scope === 'global' ? 'global' : header.from,
-      peerName: header.fromName,
-      name: meta.name,
-      done,
-      total: meta.size,
-    });
+  private closeFileChannel(conn: DataConnection) {
+    const fc = this.fileChannels.get(conn);
+    if (!fc) return;
+    this.fileChannels.delete(conn);
+    fc.abandon();
+    try {
+      fc.channel.close();
+    } catch {
+      /* ignore */
+    }
   }
 
   private connectTo(id: string) {
@@ -334,34 +285,16 @@ export class Mesh {
   }
 
   private async streamFile(header: ChatHeader, file: Blob, meta: FileMeta, threadId: string) {
-    let conns = this.targets(header);
+    const recipients = this.targets(header).flatMap((c) => {
+      const fc = this.fileChannels.get(c);
+      return fc ? [fc] : [];
+    });
     const peerName = header.scope === 'direct' ? (this.roster.get(header.to!)?.name ?? '') : 'everyone';
-    const report = (done: number) =>
-      this.cb.onTransfer({ msgId: header.msgId, direction: 'out', threadId, peerName, name: meta.name, done, total: meta.size });
-
-    for (const conn of conns) conn.send({ type: 'file-start', file: meta, ...header } satisfies WireMessage);
-    report(0);
+    const progress = progressMeter(meta.size, (done, rate) =>
+      this.cb.onTransfer({ msgId: header.msgId, direction: 'out', threadId, peerName, name: meta.name, done, total: meta.size, rate }),
+    );
     try {
-      let lastReport = 0;
-      for (let offset = 0; offset < meta.size && conns.length; offset += FILE_CHUNK_BYTES) {
-        const data = await file.slice(offset, offset + FILE_CHUNK_BYTES).arrayBuffer();
-        // Wait for the slowest recipient to drain; drop any that disconnect.
-        for (;;) {
-          conns = conns.filter((c) => c.open);
-          if (!conns.some((c) => ((c as DataConnection & { bufferSize?: number }).bufferSize ?? 0) > 0 || c.dataChannel.bufferedAmount > MAX_QUEUED_BYTES)) break;
-          await sleep(15);
-        }
-        for (const conn of conns) conn.send({ type: 'file-chunk', msgId: header.msgId, data } satisfies WireMessage);
-        const sent = offset + data.byteLength;
-        if (sent - lastReport >= meta.size / 100 || sent === meta.size) {
-          lastReport = sent;
-          report(sent);
-        }
-      }
-      for (const conn of conns) if (conn.open) conn.send({ type: 'file-end', msgId: header.msgId } satisfies WireMessage);
-    } catch (e) {
-      for (const conn of conns) if (conn.open) conn.send({ type: 'file-abort', msgId: header.msgId } satisfies WireMessage);
-      throw e;
+      await sendFileOver(recipients, header, file, meta, progress);
     } finally {
       this.cb.onTransfer({ msgId: header.msgId, finished: true });
     }
@@ -380,9 +313,9 @@ export class Mesh {
         /* ignore */
       }
     }
+    for (const conn of [...this.fileChannels.keys()]) this.closeFileChannel(conn);
     this.conns.clear();
     this.roster.clear();
-    this.incoming.clear();
     if (this.peer) {
       try {
         this.peer.destroy();
