@@ -17,7 +17,50 @@ function useObjectUrl(blob: Blob): string | null {
 function formatTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
   const s = Math.floor(sec);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const h = Math.floor(s / 3600);
+  const mm = String(Math.floor((s % 3600) / 60));
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${mm.padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+}
+
+// Shows the first frame with a play button and duration badge, like a
+// thumbnail; the browser's controls only appear once it's actually playing.
+function VideoPlayer({ src }: { src: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [started, setStarted] = useState(false);
+  const [duration, setDuration] = useState(0);
+
+  function start() {
+    const v = videoRef.current;
+    if (!v) return;
+    setStarted(true);
+    v.currentTime = 0;
+    void v.play();
+  }
+
+  return (
+    <div className={'att-media att-video' + (started ? ' started' : '')}>
+      {/* The #t fragment makes browsers decode and paint the first frame. */}
+      <video
+        ref={videoRef}
+        src={src + '#t=0.1'}
+        controls={started}
+        playsInline
+        preload="metadata"
+        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+      />
+      {!started && (
+        <button type="button" className="video-overlay" onClick={start} aria-label="Play video">
+          <span className="video-play">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor">
+              <path d="M8 5.5v13a1 1 0 001.5.86l10.5-6.5a1 1 0 000-1.72L9.5 4.64A1 1 0 008 5.5z" />
+            </svg>
+          </span>
+          {Number.isFinite(duration) && duration > 0 && <span className="video-duration">{formatTime(duration)}</span>}
+        </button>
+      )}
+    </div>
+  );
 }
 
 // Styled to match the bubbles instead of the browser's own (white, cramped)
@@ -131,11 +174,7 @@ export default function MessageAttachment({ attachment }: { attachment: Attachme
         </a>
       );
     case 'video':
-      return (
-        <div className="att-media">
-          <video src={url} controls playsInline preload="metadata" />
-        </div>
-      );
+      return <VideoPlayer src={url} />;
     case 'audio':
       return <AudioPlayer src={url} name={attachment.name} />;
     default:
